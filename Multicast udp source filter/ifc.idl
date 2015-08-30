@@ -1,0 +1,424 @@
+import "unknwn.idl" ;
+import "wtypes.idl" ;
+import "strmif.idl";
+
+
+//
+//  interfaces
+//
+
+typedef unsigned short  u_short;
+const short MAX_DESC_NAME_LEN = 255;
+
+typedef struct _teletext_ebu_t
+{
+	char language[4];
+	u_short type;
+	BYTE magazine_number;
+	BYTE page_number;
+}teletext_ebu_t;
+
+typedef struct _subtitling_t
+{
+	char language[4];
+	u_short type;
+	u_short composition_page_id;
+	u_short ancillary_page_id;
+}subtitling_t;
+
+typedef struct _pesvideodet_t
+{
+	LONG width;
+	LONG height;
+	UINT aspect_x;
+	UINT aspect_y;
+	BYTE afd;
+    LONGLONG timeperfieldNom;
+	LONGLONG timeperfieldDenom;
+	UINT profile;
+	UINT level;
+	UINT bitrate;
+	u_short interlaced_indicator;
+}pesvideodet_t;
+
+typedef struct _pesaudiodet_t
+{
+	u_short channels;
+	u_short mpeg_layer;
+	u_short mpeg_version;
+	UINT sampfreq;
+	UINT bitrate; 
+}pesaudiodet_t;
+
+typedef struct _interop_piddetails_t
+{
+	u_short stream_type;
+	u_short pid;
+	BOOL pes_supported;
+	char language[4];
+	int subtitling_descriptor_count;
+	int teletext_descriptor_count;
+	u_short pcr_pid;
+	BOOL data_ok;
+}interop_piddetails_t;
+
+typedef enum _ts_structure_enum_t
+{
+	TS_STANDARD,
+	TS_TIMECODE,  
+	TS_OVERRTP    
+}ts_structure_enum_t;
+
+typedef struct _ts_structure_t
+{
+   ts_structure_enum_t type;
+   int packet_len;
+}ts_structure_t;
+
+typedef struct _network_name_desc_t
+{
+	char network_name[MAX_DESC_NAME_LEN];
+}network_name_desc_t;
+
+typedef struct _service_list_desc_t
+{
+	u_short service_id;
+	BYTE service_type;
+}service_list_desc_t;
+
+typedef struct _cable_delivery_system_desc_t
+{
+    UINT frequency;
+	BYTE FEC_outer;
+	BYTE modulation;
+	UINT symbol_rate;
+	BYTE FEC_inner;
+}cable_delivery_system_desc_t;
+
+typedef struct _satellite_delivery_system_desc_t
+{
+	UINT frequency;
+	USHORT orbital_position;
+	BYTE west_east_flag;
+	BYTE polarization;
+	BYTE rolloff;
+	BYTE modulation_system;
+	BYTE modulation_type;
+	UINT symbol_rate;
+	BYTE FEC_inner;
+}satellite_delivery_system_desc_t;
+
+typedef struct _terrestial_delivery_system_desc_t
+{
+	UINT centre_frequency;
+	BYTE bandwidth;
+	BYTE priority;
+	BYTE time_scalling_indicator;
+	BYTE MPE_FEC_indicator;
+	BYTE constellation;
+	BYTE hierarchy_information;
+	BYTE code_rate_HP_stream;
+	BYTE code_rate_LP_stream;
+	BYTE guard_interval;
+	BYTE transmission_mode;
+	BYTE other_frequency_use;
+}terrestial_delivery_system_desc_t;
+
+
+interface IID_IUdpMulticast ;
+
+[
+    object,
+	uuid (C7953E93-2C62-428D-A2F0-4F73F07994DC)
+]
+interface IUdpMulticast : IUnknown
+{
+    HRESULT GetMulticastIp(
+		[out] ULONG *plMip
+		) ;
+
+    HRESULT SetMulticastIp(
+		[in] ULONG lMip
+		);
+    
+	HRESULT GetNicIp(
+		[out] ULONG *plNip
+		) ;
+    HRESULT SetNicIp(
+		[in] ULONG lNip
+		);
+
+	HRESULT SetNicIndex(
+		[in] ULONG lNicIndex 
+		);
+
+	HRESULT GetPort(
+		[out] u_short *psPort
+		);
+
+    HRESULT SetPort(
+		[in] u_short sPort
+		);
+
+	HRESULT GetAudioPid(
+		[out] u_short *piApid
+		);
+
+    HRESULT SetAudioPid(
+		[in] u_short iApid
+		);
+
+	HRESULT GetVideoPid(
+		[out] u_short *piVpid
+		);
+
+    HRESULT SetVideoPid(
+		[in]u_short iVpid
+		);
+
+	HRESULT GetSubtitlesPid(
+		[out] u_short * piSpid
+		);
+
+	HRESULT SetSubtitlesPid(
+		[in] u_short iSpid
+		);
+
+	HRESULT SetRecFile(
+		[in]TCHAR* p_tcFile_name
+		);
+
+	HRESULT SetSrcFile(
+		[in]TCHAR* p_tcFile_name
+		);
+	
+	HRESULT ConfigureDemultiplexer(
+		[in] u_short video_pid,
+		[in] u_short audio_pid,
+		[in] u_short subtitle_pid,
+		[in] BYTE flags
+		);
+
+	HRESULT ReportRenderingSuccess(
+		[in] BYTE pin_code
+		);
+
+	//HRESULT ConfigureParserManualVideo(
+	//	[in] AM_MEDIA_TYPE* mt
+	//		 );
+
+	//HRESULT ConfigureParserManualAudio(
+	//	[in] AM_MEDIA_TYPE* mt
+	//		 );
+	
+	HRESULT GetParsedData(
+		[in] int prog_index,
+		[in ]int pid_index,
+		[out] interop_piddetails_t* p_det
+		);
+
+	HRESULT GetProgCount(
+	[out] int* count
+	);
+
+	HRESULT GetPidCount(
+	[in] int prog_index,
+	[out] int* count
+	);
+
+	HRESULT GetSubDesc(
+	[in] int prog_index,
+	[in] int pid_index,
+	[in] int sub_index,
+	[out] subtitling_t* subdesc
+	);
+
+	HRESULT GetTtxDesc(
+	[in] int prog_index,
+	[in] int pid_index, 
+	[in] int ttx_index,
+	[out] teletext_ebu_t* ttxdesc
+	);
+
+	HRESULT GetVideoInfo(
+	[in] int prog_index,
+	[in] int pid_index, 
+	[out] pesvideodet_t* vidinfo
+	);
+
+	HRESULT GetAudioInfo(
+	[in] int prog_index,
+	[in] int pid_index, 
+	[out] pesaudiodet_t* audinfo
+	);
+
+	HRESULT GetPATPid(
+	[in] int prog_index,
+	[out] u_short* prog_num,
+	[out] u_short* pat_pid
+	);
+
+	HRESULT GetNITPid(
+	[out] u_short* nit_pid    
+	);
+
+	HRESULT GetPMTType(
+	[in] int prog_index,
+	[in] int pid_index,
+	[out] u_short* pid,
+	[out] int* type
+	);
+
+	HRESULT SetMode(
+	[in] BYTE mode
+	);
+
+	HRESULT ServicesCount(
+	[out] int* count
+	);
+
+	HRESULT GetServiceDescriptor(
+	[in] int index,
+	[out] unsigned char* provider,
+	[out] unsigned char* name,
+	[out] u_short* prog
+	);
+
+	HRESULT GetCurrentSubtitleImage(
+	[out] unsigned char* pImage
+	);
+
+	HRESULT SendPTSToH264Dec(
+	[in] BOOL set
+		);
+
+	HRESULT IgnorePTSBeforeFirstIFrameForAVSync(
+	[in] BOOL set
+	);
+
+	HRESULT ContinueOnNextStop(
+	[in] BOOL set
+	);
+
+	HRESULT GetStreamTime(
+	[out] LONGLONG *time
+	);
+
+	HRESULT ResetTiming();
+
+	HRESULT GetTransportStreamInfo(
+	[out] ts_structure_t* ts_structure
+	);
+
+	HRESULT GetCutrrentTSBitRate(
+	[out] UINT* bitrate
+		);
+
+	HRESULT GetBitRateByPidTableCount(
+    [out] UINT* count
+	);
+
+	HRESULT GetBitrateByPid(
+	[in] UINT index,
+	[out] UINT* pid,
+	[out] UINT* bitrate,
+	[out] UINT* complete_bitrate
+	);
+
+    HRESULT NitGetNetworkNameDescriptor(
+	[in] int tsindex, 
+	[out] network_name_desc_t* descriptor,
+	[out] BOOL* has_descriptor
+	);
+
+    HRESULT NitGetServiceListDescriptorCount(
+	[in] int tsindex,
+	[out] int* count
+	);
+
+    HRESULT NitGetServiceListDescriptor(
+	[in] int tsindex,
+	[in] int index,
+	[out] service_list_desc_t* descriptor
+	);
+
+	HRESULT NitGetCableDeliverySistemDescriptor(
+	[in] int tsindex,
+	[out] cable_delivery_system_desc_t* descriptor,
+	[out] BOOL* has_descriptor
+	);
+
+	HRESULT NitGetSatelliteDeliverySistemDescriptor(
+	[in] int tsindex,
+	[out] satellite_delivery_system_desc_t* descriptor,
+	[out] BOOL* has_descriptor
+	);
+
+	HRESULT NitGetTerrestialDeliverySistemDescriptor(
+	[in] int tsindex,
+	[out] terrestial_delivery_system_desc_t* descriptor,
+	[out] BOOL* has_descriptor
+	);
+
+	HRESULT NitTSDescriptorListCount(
+	[out] int* count
+	);
+
+	HRESULT NitGetTsDescriptorListIds(
+	[in] int index,
+	[out] u_short* transport_stream_id,
+	[out] u_short* original_network_id
+	);
+
+} ;
+
+cpp_quote("#define DECLARE_IUDPMULTICAST();\\")
+cpp_quote("virtual STDMETHODIMP(GetMulticastIp)(ULONG*);\\")
+cpp_quote("virtual STDMETHODIMP(SetMulticastIp)(ULONG);\\")
+cpp_quote("virtual STDMETHODIMP(GetNicIp)(ULONG *);\\")
+cpp_quote("virtual STDMETHODIMP(SetNicIp)(ULONG);\\")
+cpp_quote("virtual STDMETHODIMP(GetPort)(u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(SetPort)(u_short);\\")
+cpp_quote("virtual STDMETHODIMP(GetAudioPid)(u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(SetAudioPid)(u_short);\\")
+cpp_quote("virtual STDMETHODIMP(GetVideoPid)(u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(SetVideoPid)(u_short);\\")
+cpp_quote("virtual STDMETHODIMP(GetSubtitlesPid)(u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(SetSubtitlesPid)(u_short);\\")
+cpp_quote("virtual STDMETHODIMP(SetRecFile)(TCHAR*);\\")
+cpp_quote("virtual STDMETHODIMP(SetSrcFile)(TCHAR*);\\")
+cpp_quote("virtual STDMETHODIMP(ConfigureDemultiplexer)(u_short,u_short,u_short,BYTE);\\")
+cpp_quote("virtual STDMETHODIMP(ReportRenderingSuccess)(BYTE);\\")
+//cpp_quote("virtual STDMETHODIMP(ConfigueParserManualVideo)(AM_MEDIA_TYPE*);\\")
+//cpp_quote("virtual STDMETHODIMP(ConfigueParserManualVideo)(AM_MEDIA_TYPE*);\\")
+cpp_quote("virtual STDMETHODIMP(GetParsedData)(int,int,interop_piddetails_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetProgCount)(int*);\\")
+cpp_quote("virtual STDMETHODIMP(GetPidCount)(int,int*);\\")
+cpp_quote("virtual STDMETHODIMP(GetSubDesc)(int,int,int,subtitling_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetTtxDesc)(int,int,int,teletext_ebu_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetVideoInfo)(int,int,pesvideodet_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetAudioInfo)(int,int,pesaudiodet_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetPATPid)(int,u_short*,u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(GetNITPid)(u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(GetPMTType)(int,int,u_short*,int*);\\")
+cpp_quote("virtual STDMETHODIMP(SetMode)(BYTE);\\")
+cpp_quote("virtual STDMETHODIMP(ServiceCount)(int*);\\")
+cpp_quote("virtual STDMETHODIMP(GetServiceDescriptor)(int,unsigned char*,unsigned char*,u_short*);\\")
+cpp_quote("virtual STDMETHODIMP(GetCurrentSubtitleImage)(unsigned char*);\\")
+cpp_quote("virtual STDMETHODIMP(SendPTSToH264Dec)(BOOL);\\")
+cpp_quote("virtual STDMETHODIMP(IgnorePTSBeforeFirstIFrameForAVSync)(BOOL);\\")
+cpp_quote("virtual STDMETHODIMP(ContinueOnNextStop)(BOOL);\\")
+cpp_quote("virtual STDMETHODIMP(GetStreamTime)(LONGLONG*);\\")
+cpp_quote("virtual STDMETHODIMP(ResetTiming)();\\")
+cpp_quote("virtual STDMETHODIMP(GetTransportStreamInfo)(ts_structure_t*);\\")
+cpp_quote("virtual STDMETHODIMP(GetCutrrentTSBitRate)(UINT*);\\")
+cpp_quote("virtual STDMETHODIMP(GetBitRateByPidTableCount)(UINT*);\\")
+cpp_quote("virtual STDMETHODIMP(GetBitrateByPid)(UINT,UINT*,UINT*,UINT*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetNetworkNameDescriptor)(int,network_name_desc_t*,BOOL*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetServiceListDescriptorCount)(int,int*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetServiceListDescriptor)(int,int,service_list_desc_t*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetCableDeliverySistemDescriptor)(int,cable_delivery_system_desc_t*, BOOL*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetSatelliteDeliverySistemDescriptor)(int,satellite_delivery_system_desc_t*,BOOL*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetTerrestialDeliverySistemDescriptor)(int, terrestial_delivery_system_desc_t*,BOOL*);\\")
+cpp_quote("virtual STDMETHODIMP(NitTSDescriptorListCount)(int*);\\")
+cpp_quote("virtual STDMETHODIMP(NitGetTsDescriptorListIds)(int,u_short*,u_short* original_network_id);\\")

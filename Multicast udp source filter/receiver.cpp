@@ -1,0 +1,612 @@
+//#include "proj.h"
+#include "receiver.h"
+#include "udpfilter.h"
+#include <process.h>
+#include <Aclapi.h>
+
+//Constructor
+CReceiver::CReceiver(CPushSourceUdp* filter) 
+{
+	m_source = SOURCE_NET;
+	m_file_len =0;
+	m_multiIpAddr=ADDR_ANY;
+	m_nicIpAddr=ADDR_ANY;
+	m_nic_index=0xFFFFFFFF;
+    m_Socket = INVALID_SOCKET;
+	exitFileReadingLoopEvent=NULL;
+	
+	for (int i=0; i<BUFFER_T_NUMBER; i++)
+	{
+		m_btUnitBuffer[i].buf= &(m_recvddata[i][0]);
+		m_btUnitBuffer[i].index=i;
+		m_btUnitBuffer[i].length = RECV_BUFFER*2;
+	}
+	m_wsDataBuf.len=RECV_BUFFER;
+	m_wsDataBuf.buf = &(m_recvddata[0][0]);
+
+	m_first_thread_started=false;
+	data = new CFifo(false);
+	m_dwBuffBuildIndex=0;
+	m_dwUnitIndex=0;
+	InitializeCriticalSection(&m_CriticalSection);
+
+	m_thread_num=0;
+
+	for (int i=0; i<RECV_THREADS; i++)
+	{
+	    m_wsaevents[i][0]=NULL;
+		CReceiver::m_RecvThread[i] = NULL;
+	}
+
+    OutputDebugString(TEXT("Receiver constructor called.\n"));
+}
+
+CReceiver::~CReceiver()
+{
+	for (int i=0; i<RECV_THREADS; i++)
+	{
+		if (m_wsaevents[i][0]!=NULL)
+		CloseHandle(m_wsaevents[i][0]);
+	}
+	CReceiver::DestroySocket();
+	delete data;
+
+    DeleteCriticalSection(&m_CriticalSection);
+}
+
+
+HRESULT CReceiver::Start()
+{
+	HRESULT hr = E_FAIL;
+	if (m_source == SOURCE_NET)
+	{
+		CReceiver::Init();
+		hr = CReceiver::CreateSocket(CReceiver::m_multiIpAddr, CReceiver::m_iPort, CReceiver::m_nicIpAddr);
+	}
+	else
+	{
+		exitFileReadingLoopEvent = CreateEvent (NULL, TRUE, FALSE, NULL) ; // manual reset,  non signaled
+		hr = CReceiver::OpenFile();
+	}
+
+    return hr;
+}
+
+void CReceiver::StartReceiving()
+{
+	Receive();
+}
+
+HRESULT CReceiver::OpenFile()
+{
+    m_filestr.open (m_src_file, fstream::in | fstream::binary);
+	m_filestr.seekg (0, ios::end);
+	m_file_len = m_filestr.tellg();
+	m_filestr.seekg (0, ios::beg);
+
+	return S_OK;
+}
+
+//TODO find packet length first and then pend aligned reads !!!
+void CReceiver::ReadFile()
+{
+	for (int i=0; i<BUFFER_T_NUMBER; i++)
+	{
+		ZeroMemory(&read_data[i],FILE_RECV_BUFFER);
+		m_btUnitBuffer[i].buf= &(read_data[i][0]);
+		m_btUnitBuffer[i].index=i;
+		m_btUnitBuffer[i].length =FILE_RECV_BUFFER ;
+	}
+
+	for (int i=0; i< m_file_len; i+=FILE_RECV_BUFFER)
+	{
+		// Wait for exit event
+		if (WaitForSingleObject(exitFileReadingLoopEvent, 0)!=WAIT_TIMEOUT)
+		{
+			break;
+		}
+		Sleep(10);
+
+		if (m_dwUnitIndex==-1) 
+		{
+			// Check for free buffer
+			if ( (m_dwUnitIndex=data->get_free_index()) == -1)
+			{
+				Sleep(1);
+				i-=FILE_RECV_BUFFER;
+				continue;
+			}
+		}
+		m_wsDataBuf.buf = &(read_data[m_dwUnitIndex][m_dwBuffBuildIndex]);
+		m_filestr.seekg (i, ios::beg);
+		m_filestr.read (m_wsDataBuf.buf,FILE_RECV_BUFFER);
+		m_btUnitBuffer[m_dwUnitIndex].length = min(FILE_RECV_BUFFER, m_file_len -i) ;
+		//push and find free buffer for next read
+		m_dwUnitIndex = CReceiver::data->push(&(m_btUnitBuffer[m_dwUnitIndex]));
+	}
+
+	CloseFile();
+}
+
+// File test
+void CReceiver::CloseFile()
+{
+	m_filestr.close();
+}
+
+//Initialize Winsock 2
+HRESULT CReceiver::Init()
+{
+    if (CReceiver::m_Socket != INVALID_SOCKET)
+		return S_OK;
+
+    HRESULT hr;
+	WSADATA wsd;
+
+    OutputDebugString(TEXT("Socket Init called\n"));
+
+	if (WSAStartup(MAKEWORD(2,2),&wsd) != 0)
+	{
+	    hr = E_FAIL;
+	}
+	else
+	{
+	    hr = S_OK;
+	}
+
+    OutputDebugString(TEXT("WsaStartup initialized.\n"));
+
+	return hr;
+}
+
+HRESULT CReceiver::CreateSocket(ULONG multiip, USHORT port,  ULONG nicip)
+{
+    if (CReceiver::m_Socket != INVALID_SOCKET)
+		return S_OK;
+
+	 HRESULT hr;
+	 hr=S_OK;
+	 int ir;
+     DWORD dw;
+
+    OutputDebugString(TEXT("Create Socket called.\n"));
+
+	CReceiver::m_Socket = WSASocket(AF_INET,SOCK_DGRAM,0,0,0,IPPROTO_UDP |WSA_FLAG_OVERLAPPED );
+
+	if (CReceiver::m_Socket == INVALID_SOCKET)
+	 {
+	     dw = WSAGetLastError();
+         WSACleanup();
+		 return HRESULT_FROM_WIN32(dw);
+         OutputDebugString(TEXT("Invalid socket.\n"));
+	 }
+
+	 OutputDebugString(TEXT("Setting socket options...\n"));
+	 
+     int buffsize =RECV_BUFFER*200; //3.7 MB
+	 // int buffsize =0;
+	 // Receive buffer size
+     ir = setsockopt (
+					CReceiver::m_Socket,
+					SOL_SOCKET,
+					SO_RCVBUF,
+					(char *)&buffsize,
+					sizeof(buffsize)
+					);  
+
+	if (ir == SOCKET_ERROR)
+	{
+	     dw = WSAGetLastError();
+         WSACleanup();
+         OutputDebugString(TEXT("Setting socket buffer size option failed\n"));
+		 return HRESULT_FROM_WIN32(dw);
+	}
+
+     int buffsizes =0;
+	 // Send buffer size
+     ir = setsockopt (
+					CReceiver::m_Socket,
+					SOL_SOCKET,
+					SO_SNDBUF,
+					(char *)&buffsizes,
+					sizeof(buffsizes)
+					); 
+ 
+	if (ir == SOCKET_ERROR)
+	{
+	     dw = WSAGetLastError();
+         WSACleanup();
+         OutputDebugString(TEXT("Setting socket buffer size option failed\n"));
+		 return HRESULT_FROM_WIN32(dw);
+	}
+
+	u_long iMode=1;
+	ioctlsocket(CReceiver::m_Socket,FIONBIO,&iMode); // nonblocking socket
+
+    bool t = true;
+	// Reuse address
+	ir = setsockopt(
+           CReceiver::m_Socket,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            (char *)& t,
+            sizeof (t)
+			);
+	
+	if (ir == SOCKET_ERROR)
+	{
+	     dw = WSAGetLastError();
+         WSACleanup();
+         OutputDebugString(TEXT("Setting reuse address option failed.\n"));
+		 return HRESULT_FROM_WIN32(dw);
+	}
+	
+	bool bynic=false;
+	// Try joining to multicast group by providing NIC index.
+	if(m_nic_index!=0xFFFFFFFF && m_multiIpAddr!=ADDR_ANY)
+	{
+		OutputDebugString(TEXT("Joining to multicast group.\n"));
+
+		GROUP_REQ gr;
+		sockaddr_in* msaddr;
+
+		ZeroMemory(&gr,sizeof(group_req));
+		gr.gr_interface =m_nic_index;
+		msaddr = (sockaddr_in *)&(gr.gr_group);
+		ZeroMemory(msaddr,sizeof(sockaddr_in));
+		msaddr->sin_family = AF_INET ;
+		msaddr->sin_port = port;
+		msaddr->sin_addr.S_un.S_addr = multiip;
+
+		//((struct sockaddr*)&gr.gr_group)->sa_family=msaddr.sin_family;
+		//((struct sockaddr_in*)&gr.gr_group)->sin_addr.S_un=msaddr.sin_addr.S_un;
+		//((struct sockaddr_in*)&gr.gr_group)->sin_port = msaddr.sin_port;
+		// memcpy(&(gr.gr_group),&msaddr,sizeof(sockaddr_in));
+		
+		bynic=true;
+		ir = setsockopt( CReceiver::m_Socket,
+            IPPROTO_IP,
+            MCAST_JOIN_GROUP,
+            (char *)& gr,
+            sizeof (gr)
+			);
+		// FIXME : Socket error 10014
+	}
+	
+	// Select NIC by it`s ipv4 address
+	if (ir== SOCKET_ERROR || !bynic)
+	{
+		if (ir==SOCKET_ERROR)
+			Dump1( TEXT("MCAST_JOIN_GROUP error: %d\n"), WSAGetLastError());
+	    OutputDebugString(TEXT("MCAST_JOIN_GROUP option failed. Selecting NIC by it's Ipv4 ip\n"));
+		OutputDebugString(TEXT("Binding socket\n"));
+		
+		if (m_multiIpAddr != ADDR_ANY)
+		{
+			// Set Output interface
+			struct in_addr niciaddr;
+			ZeroMemory(&niciaddr,sizeof(in_addr));
+			niciaddr.S_un.S_addr=nicip;
+			ir = setsockopt(m_Socket,
+				IPPROTO_IP,
+				IP_MULTICAST_IF,
+				(char*)&niciaddr,
+				sizeof(in_addr));
+
+			if (ir==SOCKET_ERROR)
+			{
+				OutputDebugString(TEXT("Setting output interface failed\n"));
+			}
+		}
+
+		// Bind 
+		struct sockaddr_in  saddr ;
+		ZeroMemory(&saddr,sizeof(saddr));
+		saddr.sin_family = AF_INET ;
+		saddr.sin_port = port;
+		saddr.sin_addr.S_un.S_addr = nicip;
+
+		ir = bind(CReceiver::m_Socket,
+				(LPSOCKADDR) & saddr,
+				sizeof saddr
+				);
+
+		if (ir == SOCKET_ERROR)
+		{
+			 dw = WSAGetLastError();
+			 WSACleanup();
+			 OutputDebugString(TEXT("Binding failed\n"));
+			 hr = ERR_RECV_IPAGN_AND_IPV4_BIND_FAILED;
+			 return hr;
+		}
+
+		struct ip_mreq mreq;
+		ZeroMemory(&mreq,sizeof(mreq));
+		mreq.imr_interface.S_un.S_addr=nicip;
+		mreq.imr_multiaddr.S_un.S_addr=multiip;
+		
+		//Join to multicast group
+		if (m_multiIpAddr != ADDR_ANY)
+		    setsockopt(CReceiver::m_Socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
+
+		hr=S_OK;
+	}
+
+	return hr;
+}
+
+void CReceiver::Receive()
+{
+	DWORD Flags=0;
+	OutputDebugString(TEXT("Receiving.."));
+	for (int i=0; i<RECV_THREADS; i++)
+	{
+			
+		if (m_source==SOURCE_NET)
+		CReceiver::m_RecvThread[i] = CreateThread( NULL, // security
+						NULL,             // stack size
+						(LPTHREAD_START_ROUTINE)CReceiver::ThreadStaticEntryPoint,// entry-point-function
+						this,           // arg list 
+						CREATE_SUSPENDED, 
+						NULL );   //&uiThread1ID
+		else
+		CReceiver::m_RecvThread[i] = CreateThread( NULL, // security
+						NULL,             // stack size
+						(LPTHREAD_START_ROUTINE)CReceiver::FileReadThreadStaticEntryPoint,// entry-point-function
+						this,           // arg list 
+						CREATE_SUSPENDED, 
+						NULL );   //&uiThread1ID
+			
+
+		SetSecurityInfo(m_RecvThread[i], SE_KERNEL_OBJECT, THREAD_SET_INFORMATION, NULL, NULL, NULL, NULL);
+		BOOL success = SetThreadPriority(CReceiver::m_RecvThread[i], THREAD_PRIORITY_TIME_CRITICAL);
+		ResumeThread(m_RecvThread[i]);
+		OutputDebugString(TEXT("Thread started.\n"));
+	}
+}
+
+void CReceiver::PendReads()
+{
+	DWORD Flags=0;
+	DWORD rc=0;
+	DWORD windex=0;
+	int thread_num;
+	EnterCriticalSection(&m_CriticalSection);
+	
+	thread_num=m_thread_num;
+	m_thread_num+=1;
+	
+	OVERLAPPED_MOD RecvOverlapped ;
+	ZeroMemory(&RecvOverlapped,sizeof(OVERLAPPED_MOD));
+	RecvOverlapped.pReceiver=this;
+	RecvOverlapped.thread_index=thread_num;
+	
+	m_wsaevents[thread_num][0]=WSACreateEvent();
+	LeaveCriticalSection(&m_CriticalSection);
+
+	rc = WSARecvFrom(m_Socket,&m_wsDataBuf,1,NULL,&Flags,NULL,NULL,(LPWSAOVERLAPPED)&RecvOverlapped,CompletionROUTINEStaticEntryPoint);
+
+	if ( rc == SOCKET_ERROR)
+	{
+		if ( WSAGetLastError() != WSA_IO_PENDING)
+		{
+			printf("WSARecv() failed with error %d\n", WSAGetLastError());
+			return;
+		}
+	}
+
+	 while(TRUE)
+    {
+		windex = WSAWaitForMultipleEvents(1, m_wsaevents[thread_num], FALSE, WSA_INFINITE, TRUE);
+   
+		if (windex == WAIT_IO_COMPLETION)
+        {
+            if ( WSAGetLastError() != WSA_IO_PENDING) 
+			{
+				printf( "WSARecv failed: %d\n", WSAGetLastError());
+				break;
+			 }
+			
+			continue;
+        }
+        else
+        {
+            break;
+        }
+    }
+	 
+	WSACloseEvent(m_wsaevents[thread_num] [0] );
+	m_wsaevents[thread_num] [0] = NULL;
+
+	//if (m_Socket !=INVALID_SOCKET)
+	//{
+	//	struct ip_mreq mreq;
+	//	ZeroMemory(&mreq,sizeof(mreq));
+	//	mreq.imr_interface.S_un.S_addr=m_nicIpAddr;
+	//	mreq.imr_multiaddr.S_un.S_addr=m_multiIpAddr;
+	//	setsockopt (m_Socket, IPPROTO_IP, IP_DROP_MEMBERSHIP, (char*)&mreq, sizeof(mreq));
+	//}
+	CReceiver::DestroySocket(); 
+	OutputDebugString(TEXT("Stopped receiving:"));
+}
+
+void CReceiver::CompletionROUTINE(DWORD dwError,DWORD cbTransferred,LPWSAOVERLAPPED lpOverlapped, DWORD dwFlags)
+{
+	bool drop=false;
+	DWORD Flags=0;
+	LPOVERLAPPED_MOD om = (LPOVERLAPPED_MOD)lpOverlapped;
+	BYTE reads=1;
+	
+	if (dwError != 0 || cbTransferred == 0)
+        return;
+
+	if (m_wsDataBuf.buf==dropped_data) 
+	{
+		// Check if buffer has been freed by now
+		if ( (m_dwUnitIndex=data->get_free_index()) == -1)
+		{
+			WSARecvFrom(m_Socket,&m_wsDataBuf,1,NULL,&Flags,NULL,NULL,lpOverlapped,CompletionROUTINEStaticEntryPoint);
+			return; // Drop next packet
+		}
+		else
+		{
+			m_wsDataBuf.buf = &(m_recvddata[m_dwUnitIndex][m_dwBuffBuildIndex]);
+			WSARecvFrom(m_Socket,&m_wsDataBuf,1,NULL,&Flags,NULL,NULL,lpOverlapped,CompletionROUTINEStaticEntryPoint);
+			return; // Continue pending reads
+		}
+	}
+
+	m_dwBuffBuildIndex+=cbTransferred;
+
+	if (m_dwBuffBuildIndex >= RECV_BUFFER)
+	{
+		m_btUnitBuffer[m_dwUnitIndex].length = m_dwBuffBuildIndex;
+		// Push and find free buffer for next read
+		m_dwUnitIndex = CReceiver::data->push(&(m_btUnitBuffer[m_dwUnitIndex]));
+		m_dwBuffBuildIndex = 0;
+	}
+
+	//align buffer for next read
+	if (m_dwUnitIndex!=-1) 
+		m_wsDataBuf.buf = &(m_recvddata[m_dwUnitIndex][m_dwBuffBuildIndex]);
+	else
+		m_wsDataBuf.buf =dropped_data;
+
+	// Pend reads
+	WSARecvFrom(m_Socket,&m_wsDataBuf,1,NULL,&Flags,NULL,NULL,lpOverlapped,CompletionROUTINEStaticEntryPoint);
+
+}
+
+//void CReceiver::Recv()
+//{	
+//  	int thread_num;
+//	EnterCriticalSection(&m_CriticalSection);
+//	thread_num=m_thread_num;
+//	m_thread_num+=1;
+//	
+//	int rc=0;
+//	int err=0;
+//	DWORD Flags=0;
+//	bool drop=false;
+//	DWORD recvd=0;
+//	WSAOVERLAPPED RecvOverlapped = {0};
+//	
+//	m_wsaevents[thread_num]=WSACreateEvent();
+//	RecvOverlapped.hEvent=m_wsaevents[thread_num];
+//
+//	LeaveCriticalSection(&m_CriticalSection);
+//
+//	while(true)
+//	{
+//		EnterCriticalSection(&m_CriticalSection);
+//
+//		if (m_exit_thread)
+//		{
+//			LeaveCriticalSection(&m_CriticalSection);
+//			break;
+//		}
+//
+//		rc = WSARecvFrom(m_Socket,&m_wsDataBuf,1,&recvd,&Flags,NULL,NULL,&RecvOverlapped,NULL);
+//		if ( (rc == SOCKET_ERROR) && (WSA_IO_PENDING != (err = WSAGetLastError()))) {
+//            fprintf(stderr, "WSARecv failed: %d\n", err);
+//			LeaveCriticalSection(&m_CriticalSection);
+//            break;
+//        }
+//		
+//		LeaveCriticalSection(&m_CriticalSection);
+//
+//		// We could let the other threads to pend reads, but we don't know packet length
+//
+//		rc = WSAWaitForMultipleEvents(1, &RecvOverlapped.hEvent, TRUE, INFINITE, TRUE);
+//		if (rc == WSA_WAIT_FAILED)
+//		{
+//			fprintf(stderr, "WSAWaitForMultipleEvents failed: %d\n", WSAGetLastError());
+//			LeaveCriticalSection(&m_CriticalSection);
+//			break;
+//		}
+//
+//		ResetEvent(RecvOverlapped.hEvent);
+//
+//		rc = WSAGetOverlappedResult(m_Socket, &RecvOverlapped, &recvd, FALSE, &Flags);
+//        if (rc == FALSE) {
+//			continue;
+//        }
+//
+//		EnterCriticalSection(&m_CriticalSection);
+//		
+//		m_dwBuffBuildIndex+=recvd;
+//
+//		if (m_dwBuffBuildIndex >= RECV_BUFFER)
+//		{
+//			m_btUnitBuffer[m_dwUnitIndex].length = m_dwBuffBuildIndex;
+//			CReceiver::data->push(&(m_btUnitBuffer[m_dwUnitIndex]));
+// 		
+//			m_dwBuffBuildIndex = 0;
+//
+//			//find free buffer
+//			int freeunit = data->get_free_index();
+//			if (freeunit != -1)
+//				m_dwUnitIndex=freeunit;
+//			else
+//				drop=true;
+//		}
+//
+//			// Align buffer for another read
+//		if (!drop)	
+//			m_wsDataBuf.buf=& (m_btUnitBuffer[m_dwUnitIndex].buf[m_dwBuffBuildIndex]);
+//		else
+//			m_wsDataBuf.buf=m_recvddatadropped;
+//
+//		LeaveCriticalSection(&m_CriticalSection);
+//	}
+//
+//	EnterCriticalSection(&m_CriticalSection);
+//	CReceiver::DestroySocket(); 
+//	LeaveCriticalSection(&m_CriticalSection);
+//}
+
+void CReceiver::Stop()
+{
+
+	for (int i=0; i<RECV_THREADS; i++)
+	{
+		if(m_wsaevents[i][0]!=NULL)
+			SetEvent(m_wsaevents[i][0]);
+		if (exitFileReadingLoopEvent != NULL)
+		{
+			SetEvent(exitFileReadingLoopEvent);
+		}
+	}
+
+	for (int i=0; i<RECV_THREADS; i++)
+	{
+		if (CReceiver::m_RecvThread[i])
+		{
+			if (m_RecvThread[i] != NULL)
+			{
+				WaitForSingleObject(m_RecvThread[i],INFINITE); // Wait thread to finish.
+				CloseHandle(m_RecvThread[i]);
+				m_RecvThread[i] = NULL;
+			}
+		}
+	}
+
+    //SetEvent(m_StopEvent);
+}
+
+void CReceiver::DestroySocket()
+{
+    EnterCriticalSection(&m_CriticalSection);
+
+	if (m_Socket != INVALID_SOCKET)
+	{
+	    closesocket(m_Socket);
+		m_Socket = INVALID_SOCKET;
+		WSACleanup();
+	}
+	
+	LeaveCriticalSection(&m_CriticalSection);
+}
+
+
+

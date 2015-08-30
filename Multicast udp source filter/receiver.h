@@ -1,0 +1,105 @@
+
+#ifndef H_RECEIVER
+#define H_RECEIVER
+#include "proj.h"
+#include "structs.h"
+#include "fifo.h"
+#include <iostream>
+#include <fstream>
+
+#define OutputDebugString  OutputDebugStringA
+#define RECV_THREADS 1			// only one thread  
+#define MAX_RECV_THREADS 10
+
+const int RECV_BUFFER = 50008; // 50 kbytes, x=38 : 188bytes*7*X ,7=ts packets in udp packet, x=num of udp packets. Bigger the buffer better, but it can't be to big, because sources with low bitrate, such as radios, would take to long to fill it.
+const int FILE_RECV_BUFFER =  789600;  //~790 kbytes 188*7* 600
+const int MAX_NON_FRAG_UDP =1500;
+
+#define ERR_RECV_IPAGN_AND_IPV4_BIND_FAILED 0x801
+
+//forward declarations
+class CPushSourceUdp;
+class CReceiver;
+
+typedef struct _OVERLAPPED_MOD
+{
+    OVERLAPPED ol;
+    CReceiver* pReceiver;
+	int thread_index;
+} OVERLAPPED_MOD, *LPOVERLAPPED_MOD;
+
+
+class CReceiver
+{
+
+    private:
+		
+		SOCKET m_Socket;
+		std::fstream m_filestr;
+
+		buffer_t m_btUnitBuffer[BUFFER_T_NUMBER];
+		char m_recvddata[BUFFER_T_NUMBER][RECV_BUFFER*2]; // Array of recv buffers. Receiving thread is filling these buffers.
+		char read_data[BUFFER_T_NUMBER][FILE_RECV_BUFFER]; // Larger buffers for file reading
+
+		char dropped_data[RECV_BUFFER*2];
+		WSABUF m_wsDataBuf;
+
+		DWORD m_dwRecvBytes, m_dwBuffBuildIndex;
+		int m_dwUnitIndex;
+		WSAEVENT m_wsaevents[RECV_THREADS][MAXIMUM_WAIT_OBJECTS];
+		HANDLE exitFileReadingLoopEvent;
+
+		bool m_first_thread_started;
+		void CompletionROUTINE(DWORD dwError,DWORD cbTransferred,LPWSAOVERLAPPED lpOverlapped, DWORD dwFlags);
+		void PendReads();
+		static void CALLBACK CReceiver::CompletionROUTINEStaticEntryPoint(DWORD dwError,DWORD cbTransferred,LPWSAOVERLAPPED lpOverlapped, DWORD dwFlags)
+        {
+			LPOVERLAPPED_MOD lpOwerlappedMod = (LPOVERLAPPED_MOD)lpOverlapped;
+			CReceiver* pThis = lpOwerlappedMod->pReceiver;
+			pThis->CompletionROUTINE(dwError,cbTransferred,lpOverlapped,dwFlags);
+        }
+		static DWORD WINAPI CReceiver::ThreadStaticEntryPoint( LPVOID arg)
+        {
+			CReceiver * pthX = (CReceiver*)arg; 
+	        pthX->PendReads();    
+            return EXIT_SUCCESS;   
+        }
+		static DWORD WINAPI CReceiver::FileReadThreadStaticEntryPoint( LPVOID arg)
+        {
+			CReceiver * pthX = (CReceiver*)arg; 
+	        pthX->ReadFile();    
+            return EXIT_SUCCESS;   
+        }
+		HANDLE m_RecvThread[RECV_THREADS];
+        CRITICAL_SECTION m_CriticalSection;
+
+        CPushSourceUdp* p_mUdpFilter;
+		int m_thread_num;
+
+    public:
+	
+        ULONG m_multiIpAddr, m_nicIpAddr;
+		int m_iPort;
+		ULONG m_nic_index;
+
+		BYTE m_source;
+		LONGLONG m_file_len;
+		TCHAR m_src_file[MAX_FILENAME_LEN];
+		
+		HRESULT Start();
+        void StartReceiving();
+		void Stop();
+		CFifo* data;
+		CReceiver(CPushSourceUdp*);
+		~CReceiver();
+		HRESULT Init();
+		HRESULT OpenFile();
+		HRESULT CreateSocket(ULONG multiip, USHORT port, ULONG nicip);
+		void Receive();
+		void ReadFile();
+		void DestroySocket();
+		void CloseFile();
+
+};
+
+#endif
